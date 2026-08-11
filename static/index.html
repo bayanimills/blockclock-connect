@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlockClock Connect</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23f7931a'/%3E%3Ctext x='50' y='68' font-size='52' text-anchor='middle' fill='%23111'%3E%E2%97%89%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="logo" aria-hidden="true">&#9673;</span>
+    <div>
+      <h1>BlockClock Connect</h1>
+      <p class="sub">Point your BLOCKCLOCK at the data you care about</p>
+    </div>
+  </div>
+  <div class="header-pills">
+    <div id="offline-pill" class="pill pill-demo" hidden
+         title="BC_OFFLINE is set - every preview uses synthetic data">Demo data</div>
+    <div id="status-pill" class="pill pill-off">Not connected</div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============ 1 - CONNECT ============ -->
+  <section class="card" id="card-connect">
+    <h2><span class="step">1</span> Connect your clock</h2>
+
+    <div id="connect-form">
+      <p class="hint">Your BLOCKCLOCK mini or micro just needs to be on the
+      same network. Scan for it, or type its IP address.</p>
+
+      <div class="row">
+        <label class="sr-only" for="subnet">Subnet to scan</label>
+        <input id="subnet" type="text" placeholder="192.168.1.0/24"
+               autocomplete="off" spellcheck="false">
+        <button id="btn-scan" class="btn btn-primary">Scan my network</button>
+      </div>
+      <div id="scan-status" class="hint" hidden></div>
+      <ul id="scan-results" class="clock-list"></ul>
+
+      <div class="divider"><span>or enter the IP directly</span></div>
+
+      <div class="row">
+        <label class="sr-only" for="manual-ip">Clock IP address</label>
+        <input id="manual-ip" type="text" placeholder="e.g. 192.168.1.50"
+               autocomplete="off" spellcheck="false">
+        <button id="btn-connect" class="btn">Connect</button>
+      </div>
+      <p id="connect-error" class="error" hidden></p>
+      <p class="hint">No clock handy? You can still build and preview your
+        rotation below - connect any time to play it.</p>
+    </div>
+
+    <div id="connect-done" hidden>
+      <div class="connected-box">
+        <div class="tick" aria-hidden="true">&#10003;</div>
+        <div class="connected-meta">
+          <strong id="clock-model">BLOCKCLOCK</strong>
+          <span id="clock-detail"></span>
+          <span id="driving-note" class="hint"></span>
+        </div>
+        <button id="btn-disconnect" class="btn btn-ghost">Disconnect</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2 - LIBRARY ============ -->
+  <section class="card" id="card-library">
+    <div class="card-head">
+      <h2><span class="step">2</span> Pick your stats</h2>
+      <span id="library-count" class="hint"></span>
+    </div>
+    <p class="hint">Every stat the app can put on your clock, previewed
+      exactly as it will look - backlight colour included. Add the ones you
+      like; anything that needs a detail first (a city, a key) says so.</p>
+    <div id="library-warnings" class="warn" hidden></div>
+    <div id="library" aria-live="polite"></div>
+  </section>
+
+  <!-- ============ 3 - ROTATION ============ -->
+  <section class="card" id="card-rotation">
+    <div class="card-head">
+      <h2><span class="step">3</span> Your rotation</h2>
+      <span id="loop-estimate" class="hint"></span>
+    </div>
+    <p class="hint">The order your clock cycles through. Drag to rearrange
+      (or use the arrows), hold a stat on screen longer with
+      <strong>Hold</strong>, and give it hours with <strong>When</strong> -
+      e.g. weather only from 6&nbsp;am to 9&nbsp;am.</p>
+
+    <div id="rotation-empty" class="empty" hidden>
+      <p>Nothing here yet - pick some stats above to build your rotation.</p>
+      <button id="btn-starter" class="btn btn-primary">Add a starter set</button>
+    </div>
+
+    <ul id="rotation-list" class="rot"></ul>
+    <p id="rotation-hidden-note" class="hint dim" hidden></p>
+
+    <div class="rotation-foot">
+      <label class="field inline" for="interval">Seconds per screen
+        <input type="number" id="interval" min="65" step="5" value="65">
+      </label>
+      <span class="hint">The clock accepts about one change per minute
+        (65&nbsp;s is its safe minimum).</span>
+    </div>
+  </section>
+
+  <!-- ============ 4 - PREVIEW & PLAY ============ -->
+  <section class="card" id="card-play">
+    <h2><span class="step">4</span> Preview &amp; play</h2>
+
+    <div id="play-empty" class="empty" hidden>
+      <p>Your rotation preview appears here once you've added some stats.</p>
+    </div>
+
+    <div id="play-live">
+      <div class="play-stage">
+        <div id="play-mock" class="play-mockslot"></div>
+        <div class="play-meta">
+          <strong id="play-label">-</strong>
+          <span id="play-pos" class="hint"></span>
+        </div>
+      </div>
+      <div class="play-actions">
+        <button id="btn-play" class="btn btn-primary btn-big">
+          Play my rotation on the clock</button>
+        <button id="btn-play-test" class="btn btn-ghost"
+                title="Push just this one frame to the clock now">
+          Test this frame</button>
+      </div>
+      <p class="hint">Playing takes over your clock's display - it shows your
+        rotation, one change per ~65&nbsp;seconds. To hand the clock back to
+        its own screens, hit <strong>Disconnect</strong> at the top; it
+        recovers by itself within a few minutes.</p>
+    </div>
+
+    <div id="now-box" class="now-box" hidden>
+      <span class="now-dot" aria-hidden="true"></span>
+      <div class="now-meta">
+        <span class="now-title">Now on your clock:
+          <strong id="now-label">-</strong></span>
+        <span id="now-countdown" class="hint"></span>
+      </div>
+      <div id="now-mock" class="now-mockslot"></div>
+    </div>
+  </section>
+
+  <!-- ============ ADVANCED - AGENT / API ACCESS ============ -->
+  <section class="card card-quiet" id="card-agent">
+    <details class="agent-details">
+      <summary>
+        <span class="agent-sumtitle">Advanced &middot; AI assistant / API
+          access</span>
+        <span id="agent-pill" class="pill pill-off">Off</span>
+      </summary>
+
+      <label class="agent-toggle">
+        <input type="checkbox" id="agent-enabled">
+        <span>Let an AI assistant control this clock (API access)</span>
+      </label>
+      <p class="hint">Turning this on generates a secret token. Anything
+        holding that token can change what your clock shows (and nothing
+        else &mdash; it can't read your keys or settings). It stays
+        <strong>off unless you turn it on</strong>; turn it off or
+        regenerate the token any time.</p>
+
+      <div id="agent-on" hidden>
+        <div class="agent-row">
+          <span class="agent-key">Base URL</span>
+          <code id="agent-base" class="agent-code"></code>
+        </div>
+        <div class="agent-row">
+          <span class="agent-key">Token</span>
+          <code id="agent-token" class="agent-code">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</code>
+          <span class="agent-btns">
+            <button id="btn-token-reveal" class="btn btn-small">Reveal</button>
+            <button id="btn-token-copy" class="btn btn-small">Copy</button>
+            <button id="btn-token-regen" class="btn btn-small btn-ghost"
+                    title="Replace the token; the old one stops working immediately">
+              Regenerate</button>
+          </span>
+        </div>
+        <p class="hint">Works with Claude, OpenAI function-calling and MCP.
+          Point tools at
+          <a href="/openapi.json" target="_blank" rel="noopener">/openapi.json</a>
+          (the schema of the agent endpoints), or run the bundled MCP server
+          &mdash; see <code>mcp/README.md</code> in the app's repo. Your
+          assistant sends
+          <code>Authorization: Bearer &lt;token&gt;</code> to
+          <code>/agent/&hellip;</code></p>
+      </div>
+    </details>
+  </section>
+
+</main>
+
+<footer>
+  <p>Talks to your clock over your own network using its built-in local API.
+     No Coinkite account, no cloud. Data comes keyless from public APIs
+     (Coinbase, mempool.space, Open-Meteo and friends) - and optionally from
+     your own node or shop. Any key or password you add stays on your Umbrel
+     and is only ever used to read your own data.</p>
+  <p class="footer-cta">Missing a stat you want on your clock?
+     <a href="https://github.com/bayanimills/blockclock-connect/issues/new?labels=feed-request"
+        target="_blank" rel="noopener">Request a feed &rarr;</a></p>
+</footer>
+
+<div id="save-bar" class="save-bar" hidden>
+  <span id="save-msg">Unsaved changes</span>
+  <div class="save-bar-actions">
+    <button id="btn-discard" class="btn btn-ghost">Discard</button>
+    <button id="btn-save" class="btn btn-primary">Save &amp; apply</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

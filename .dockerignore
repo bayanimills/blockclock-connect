@@ -1,0 +1,26 @@
+# Keep the build context to just what the Dockerfile COPYs.
+.git
+.github
+.gitignore
+.gitattributes
+.dockerignore
+
+# client-side tooling - runs where the assistant lives, not in the image
+mcp
+
+# python build/dev artifacts
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+venv
+
+# runtime state + logs (dev `docker run` mounts ./data)
+data
+*.log
+
+# docs/licensing (served app is self-contained; these live in the repo)
+licenses
+*.md
+NOTICE
+LICENSE

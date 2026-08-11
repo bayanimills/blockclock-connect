@@ -1,0 +1,4 @@
+# All pure-python (no compiled wheels) so the image builds identically for
+# linux/amd64 and linux/arm64. External data sources use stdlib urllib.
+Flask==3.0.3
+waitress==3.0.2

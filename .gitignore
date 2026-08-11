@@ -1,0 +1,14 @@
+# runtime state (mounted /data in the container; ./data in dev)
+data/
+config.json
+state.json
+
+# python
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# local dev noise
+*.log
+.DS_Store
