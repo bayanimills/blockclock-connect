@@ -34,7 +34,8 @@ SYNTHETIC_WEATHER = {"temp": 21.4, "code": 2}
 def _synthetic_bundle():
     now = time.time()
     return {"uv": 7.2, "wind": 18.0, "humidity": 64, "rain": 80,
-            "sunrise": now - 5 * 3600, "sunset": now + 94 * 60}
+            "sunrise": now - 5 * 3600, "sunset": now + 94 * 60,
+            "utc_offset": 36000}  # AEST, so the sunset clock time is plausible
 
 
 SYNTHETIC_AIR = {"pm2_5": 6.1, "aqi": 22}
@@ -51,6 +52,22 @@ _WMO = [
     ((71, 73, 75, 77, 85, 86), "SNOW"),
     ((95, 96, 99), "STORM"),
 ]
+
+
+def _sunset_prefix(opt):
+    """The 2-char sunset label the user picked: SS (sunset), SD (sundown), DK
+    (dusk), or blank. Defaults to SS when unset; anything unrecognised -> blank
+    (the bare time)."""
+    if opt is None:
+        return "SS"
+    v = str(opt).strip().upper()
+    return v if v in ("SS", "SD", "DK") else ""
+
+
+def _coded(code, value):
+    """Code at the left edge, reading at the right edge of seven slots."""
+    reading = str(int(round(float(value))))
+    return f"{code:<{7 - len(reading)}}{reading}"
 
 
 def wmo_word(code):
@@ -160,12 +177,15 @@ def weather_bundle(lat, lon):
         d = _http_json(FORECAST_API + "?" + urllib.parse.urlencode(params))
         try:
             cur, daily = d["current"], d["daily"]
+            # timezone=auto makes Open-Meteo return the city's UTC offset; add
+            # it to the unix sunset to read the local wall-clock sunset time.
             return {"uv": float(cur["uv_index"]),
                     "wind": float(cur["wind_speed_10m"]),
                     "humidity": int(cur["relative_humidity_2m"]),
                     "rain": daily["precipitation_probability_max"][0],
                     "sunrise": float(daily["sunrise"][0]),
-                    "sunset": float(daily["sunset"][0])}
+                    "sunset": float(daily["sunset"][0]),
+                    "utc_offset": int(d.get("utc_offset_seconds") or 0)}
         except (TypeError, KeyError, IndexError, ValueError):
             return None
     key = f"wxb:{round(float(lat), 4)},{round(float(lon), 4)}"
@@ -279,9 +299,10 @@ def _weather_frames(options, wanted=None):
             temp = int(round(w["temp"]))
             color = temp_color(w["temp"], units)
             if want("weather_temp"):
+                text = _coded("TEMP", temp)
                 add(_frame("weather_temp",
-                           show_number_path(temp, tl=place, br=f"deg{units}"),
-                           number=temp, color=color))
+                           show_text_path(text, tl=place, br=f"deg{units}"),
+                           text=text, color=color))
             if want("weather_condition"):
                 word = wmo_word(w.get("code"))
                 if word:
@@ -295,32 +316,36 @@ def _weather_frames(options, wanted=None):
         b = weather_bundle(lat, lon)
         if b:
             if want("weather_uv") and b.get("uv") is not None:
-                val = f"{b['uv']:.1f}"
+                text = _coded("UV", b["uv"])
                 add(_frame("weather_uv",
-                           show_number_path(val, tl="UV index", br=place),
-                           number=val, color=_uv_color(b["uv"])))
+                           show_text_path(text, tl="UV index", br=place),
+                           text=text, color=_uv_color(b["uv"])))
             if want("weather_wind") and b.get("wind") is not None:
                 wind = int(round(b["wind"]))
+                text = _coded("WIND", wind)
                 add(_frame("weather_wind",
-                           show_number_path(wind, tl="wind", br="km/h"),
-                           number=wind, color=LED_WARM_WHITE))
+                           show_text_path(text, tl="wind", br="km/h"),
+                           text=text, color=LED_WARM_WHITE))
             if want("weather_humidity") and b.get("humidity") is not None:
+                text = _coded("HUM", b["humidity"])
                 add(_frame("weather_humidity",
-                           show_number_path(int(b["humidity"]), tl="humidity",
-                                            br="%"),
-                           number=int(b["humidity"]), color=LED_NET_BLUE))
+                           show_text_path(text, tl="humidity", br="%"),
+                           text=text, color=LED_NET_BLUE))
             if want("weather_rain") and b.get("rain") is not None:
+                text = _coded("RAIN", b["rain"])
                 add(_frame("weather_rain",
-                           show_number_path(int(b["rain"]), tl="rain chance",
-                                            br="% today"),
-                           number=int(b["rain"]), color=LED_NET_BLUE))
+                           show_text_path(text, tl="rain chance", br="% today"),
+                           text=text, color=LED_NET_BLUE))
             if want("weather_sunset") and b.get("sunset"):
-                mins = int((b["sunset"] - time.time()) / 60)
-                if 0 <= mins <= 1440:  # only meaningful before sunset
-                    add(_frame("weather_sunset",
-                               show_number_path(mins, tl="sunset in",
-                                                br="minutes"),
-                               number=mins, color=LED_AMBER))
+                # the local wall-clock sunset time, e.g. "SS18:42" - prefix (2
+                # chars) + HH:MM fills the 7 slots exactly. Prefix is the user's
+                # pick (SS/SD/DK) or blank; blank just shows the bare time.
+                lt = time.gmtime(b["sunset"] + (b.get("utc_offset") or 0))
+                prefix = _sunset_prefix(options.get("sunset_label"))
+                text = f"{prefix}{lt.tm_hour:02d}:{lt.tm_min:02d}"
+                add(_frame("weather_sunset",
+                           show_text_path(text, tl=place, br="sunset"),
+                           text=text, color=LED_AMBER))
             if want("weather_daylen") and b.get("sunrise") and b.get("sunset"):
                 hours = (b["sunset"] - b["sunrise"]) / 3600
                 if 0 < hours <= 24:
@@ -334,22 +359,23 @@ def _weather_frames(options, wanted=None):
         air = air_quality(lat, lon)
         if air:
             if want("weather_air_pm25") and air.get("pm2_5") is not None:
-                val = f"{air['pm2_5']:.1f}"
+                text = _coded("PM", air["pm2_5"])
                 add(_frame("weather_air_pm25",
-                           show_number_path(val, tl="PM2.5", br="ug/m3"),
-                           number=val, color=_pm_color(air["pm2_5"])))
+                           show_text_path(text, tl="PM2.5", br="ug/m3"),
+                           text=text, color=_pm_color(air["pm2_5"])))
             if want("weather_air_aqi") and air.get("aqi") is not None:
+                text = _coded("AQ", air["aqi"])
                 add(_frame("weather_air_aqi",
-                           show_number_path(int(air["aqi"]), tl="air quality",
-                                            br="EU AQI"),
-                           number=int(air["aqi"]), color=LED_WARM_WHITE))
+                           show_text_path(text, tl="air quality", br="EU AQI"),
+                           text=text, color=LED_WARM_WHITE))
 
     if want("weather_moon"):
         moon = moon_illumination(lat, lon)
         if moon is not None:
+            text = _coded("MOON", moon)
             add(_frame("weather_moon",
-                       show_number_path(int(moon), tl="moon", br="% lit"),
-                       number=int(moon), color=LED_WARM_WHITE))
+                       show_text_path(text, tl="moon", br="% lit"),
+                       text=text, color=LED_WARM_WHITE))
     return frames
 
 
@@ -367,7 +393,7 @@ register_source(
         ("weather_wind", "Wind speed"),
         ("weather_humidity", "Humidity"),
         ("weather_rain", "Rain chance today"),
-        ("weather_sunset", "Minutes to sunset"),
+        ("weather_sunset", "Sunset time"),
         ("weather_daylen", "Day length"),
         ("weather_air_pm25", "Air quality (PM2.5)"),
         ("weather_air_aqi", "Air quality (AQI)"),
@@ -378,6 +404,12 @@ register_source(
         "city": {"type": "text", "label": "City", "default": ""},
         "units": {"type": "select", "label": "Units",
                   "choices": ["C", "F"], "default": "C"},
+        "sunset_label": {"type": "select", "label": "Sunset label",
+                         "choices": [{"id": "SS", "label": "Sunset (SS)"},
+                                     {"id": "SD", "label": "Sundown (SD)"},
+                                     {"id": "DK", "label": "Dusk (DK)"},
+                                     {"id": "", "label": "None (time only)"}],
+                         "default": "SS"},
         "show_condition": {"type": "bool", "label": "Also show conditions",
                            "default": False},
     },

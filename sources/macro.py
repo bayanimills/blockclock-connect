@@ -11,7 +11,7 @@ fred_api_key_set / _hint in every API response.
 import urllib.parse
 
 from clock import LED_AMBER, LED_RED, LED_WARM_WHITE, show_number_path
-from sources import (CURRENCIES, _cached, _frame, _http_json, _http_redacted,
+from sources import (_cached, _frame, _http_json, _http_redacted,
                      is_offline, register_source)
 
 GOLD_API = "https://api.gold-api.com/price"
@@ -19,6 +19,14 @@ FRANKFURTER_API = "https://api.frankfurter.dev/v1/latest"
 TREASURY_API = ("https://api.fiscaldata.treasury.gov/services/api/"
                 "fiscal_service/v2/accounting/od/debt_to_penny")
 FRED_API = "https://api.stlouisfed.org/fred/series/observations"
+
+# Every currency Frankfurter (ECB) serves - the full pick list for the forex
+# pair and the metal reference currency, so "which countries" is a real choice
+# rather than the handful the price picker constrains itself to.
+FOREX_CCYS = ["USD", "EUR", "AUD", "GBP", "JPY", "CAD", "CHF", "NZD", "CNY",
+              "HKD", "SGD", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON",
+              "BGN", "ISK", "TRY", "ILS", "INR", "IDR", "MYR", "PHP", "THB",
+              "KRW", "ZAR", "MXN", "BRL"]
 
 SYNTHETIC = {"XAU": 4332.60, "XAG": 52.10, "forex": 1.4204,
              "debt_t": 39.89, "SP500": 6890.0, "DGS10": 4.2}
@@ -37,6 +45,29 @@ def metal_spot(symbol):
         except (TypeError, KeyError, ValueError):
             return None
     return _cached(f"metal:{symbol}", 600, fetch)
+
+
+def metal_in_currency(symbol, ccy):
+    """Metal spot per oz in the chosen reference currency. gold-api quotes USD,
+    so any non-USD currency rides the same keyless ECB forex rate the forex
+    frame uses. None if either leg is unavailable."""
+    usd = metal_spot(symbol)
+    if usd is None:
+        return None
+    if not ccy or ccy == "USD":
+        return usd
+    rate = forex_rate("USD", ccy)
+    return usd * rate if rate else None
+
+
+def _fmt_metal(v):
+    """Fit a metal price into the 7 slots at honest precision across the huge
+    range a reference currency can span (AUD ~6000/oz vs JPY ~900000/oz)."""
+    if v < 100:
+        return f"{v:.2f}"
+    if v < 10_000:
+        return f"{v:.1f}"
+    return str(int(round(v)))
 
 
 def forex_rate(base, quote):
@@ -120,20 +151,25 @@ def _macro_frames(options, wanted=None):
             add(_frame("forex",
                        show_number_path(val, tl=f"1 {base} in", br=quote),
                        number=val, color=LED_WARM_WHITE))
+    metal_ccy = options.get("metal_currency") or "USD"
     if want("gold_price"):
-        xau = metal_spot("XAU")
+        xau = metal_in_currency("XAU", metal_ccy)
         if xau:
-            val = f"{xau:.1f}" if xau < 10_000 else str(int(round(xau)))
-            add(_frame("gold_price",
-                       show_number_path(val, tl="gold", br="USD / oz"),
-                       number=val, color=LED_AMBER))
+            val = _fmt_metal(xau)
+            if len(val) <= 7:
+                add(_frame("gold_price",
+                           show_number_path(val, tl="gold",
+                                            br=f"{metal_ccy} / oz"),
+                           number=val, color=LED_AMBER))
     if want("silver_price"):
-        xag = metal_spot("XAG")
-        if xag and xag < 10_000:
-            val = f"{xag:.2f}"
-            add(_frame("silver_price",
-                       show_number_path(val, tl="silver", br="USD / oz"),
-                       number=val, color=LED_WARM_WHITE))
+        xag = metal_in_currency("XAG", metal_ccy)
+        if xag:
+            val = _fmt_metal(xag)
+            if len(val) <= 7:
+                add(_frame("silver_price",
+                           show_number_path(val, tl="silver",
+                                            br=f"{metal_ccy} / oz"),
+                           number=val, color=LED_WARM_WHITE))
     if want("us_debt"):
         debt = us_debt_trillions()
         if debt:
@@ -164,14 +200,15 @@ register_source(
     "macro",
     label="Macro & markets",
     category="macro",
-    description="Forex (ECB official), gold & silver spot, and the US "
+    description="Forex for any currency pair you pick, gold & silver spot in "
+                "your reference currency (AUD/oz, EUR/oz...), and the US "
                 "national debt - all keyless. S&P 500 and the US 10-year "
                 "yield need a free FRED API key (fred.stlouisfed.org) and "
                 "stay off without one.",
     frames=[
         ("forex", "Forex rate"),
-        ("gold_price", "Gold spot (USD/oz)"),
-        ("silver_price", "Silver spot (USD/oz)"),
+        ("gold_price", "Gold spot"),
+        ("silver_price", "Silver spot"),
         ("us_debt", "US national debt ($T)"),
         ("spx_index", "S&P 500 [FRED key]"),
         ("us_10y", "US 10Y yield [FRED key]"),
@@ -179,9 +216,12 @@ register_source(
     builder=_macro_frames,
     options_schema={
         "forex_base": {"type": "select", "label": "Forex: base",
-                       "choices": CURRENCIES, "default": "USD"},
+                       "choices": FOREX_CCYS, "default": "USD"},
         "forex_quote": {"type": "select", "label": "Forex: quote",
-                        "choices": CURRENCIES, "default": "AUD"},
+                        "choices": FOREX_CCYS, "default": "AUD"},
+        "metal_currency": {"type": "select",
+                           "label": "Gold/silver reference currency",
+                           "choices": FOREX_CCYS, "default": "USD"},
         "fred_api_key": {"type": "password",
                          "label": "FRED API key (free, optional)",
                          "default": ""},

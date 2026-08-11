@@ -146,8 +146,37 @@ def _validate_sources(payload_sources, current_sources, strict=True):
     # more. A bitaroo_api_key saved by an older version still loads (and
     # stays redacted everywhere) - it is just never read.
     bitaroo_key = _merge_secret(popt, cur_popt, "bitaroo_api_key")
+
+    # cross-source spread: two exchanges + a currency (skips at render if a
+    # picked exchange doesn't serve that currency - no need to constrain here)
+    def _exch(key, default):
+        v = str(popt.get(key, cur_popt.get(key) or default) or default).lower()
+        if v not in EXCHANGES:
+            fail(f"Unknown exchange '{v}'")
+            v = default
+        return v
+    cmp_a = _exch("compare_a", "kraken")
+    cmp_b = _exch("compare_b", "coingecko")
+    cmp_ccy = str(popt.get("compare_currency",
+                           cur_popt.get("compare_currency") or "USD")
+                  or "USD").upper()
+    if cmp_ccy not in CURRENCIES:
+        fail(f"Unsupported currency '{cmp_ccy}'")
+        cmp_ccy = "USD"
+    if cmp_a == cmp_b:
+        fail("Spread exchanges A and B must be different")
+        cmp_a, cmp_b = "kraken", "coingecko"
+    common_ccys = (set(EXCHANGES[cmp_a]["ccys"])
+                   & set(EXCHANGES[cmp_b]["ccys"]))
+    if cmp_ccy not in common_ccys:
+        fail(f"{cmp_ccy} is not served by both spread exchanges")
+        cmp_ccy = next((c for c in ("USD", "AUD", "EUR", "GBP")
+                         if c in common_ccys),
+                        sorted(common_ccys)[0] if common_ccys else "USD")
     out["price"] = {"enabled": bool(p.get("enabled")),
                     "options": {"exchange": exchange, "currency": ccy,
+                                "compare_a": cmp_a, "compare_b": cmp_b,
+                                "compare_currency": cmp_ccy,
                                 "bitaroo_api_key": bitaroo_key}}
 
     # -- network
@@ -170,6 +199,9 @@ def _validate_sources(payload_sources, current_sources, strict=True):
     city = str(wopt.get("city") or "").strip()
     units = "F" if str(wopt.get("units", "C")).upper() == "F" else "C"
     show_cond = bool(wopt.get("show_condition"))
+    sunset_label = str(wopt.get("sunset_label", "SS")).strip().upper()
+    if sunset_label not in ("SS", "SD", "DK", ""):
+        sunset_label = "SS"
     enabled = bool(w.get("enabled"))
 
     def _coord(val, lo, hi):
@@ -210,6 +242,7 @@ def _validate_sources(payload_sources, current_sources, strict=True):
     out["weather"] = {"enabled": enabled,
                       "options": {"city": city, "units": units,
                                   "show_condition": show_cond,
+                                  "sunset_label": sunset_label,
                                   "lat": lat, "lon": lon, "place": place}}
 
     # -- shopify (advanced / merchant). The Admin token lives ONLY in the
@@ -1236,6 +1269,45 @@ def selfcheck():
                                   "options": {"currency": "DOGE"}}}})
         assert r.status_code == 400, r.get_json()
 
+    def t_price_compare_validation():
+        for options in (
+                {"compare_a": "kraken", "compare_b": "kraken",
+                 "compare_currency": "USD"},
+                {"compare_a": "bitaroo", "compare_b": "kraken",
+                 "compare_currency": "USD"}):
+            r = c.post("/api/config", json={
+                "sources": {"price": {"enabled": True,
+                                       "options": options}}})
+            assert r.status_code == 400, r.get_json()
+
+    def t_legacy_price_rotation_migration():
+        d = tempfile.mkdtemp(prefix="blockclock-migration-")
+        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"rotation": ["btc_price", "au_premium", "au_spread"],
+                       "frames": {"au_premium": {"dwell": 2},
+                                  "au_spread": {"dwell": 3}}}, f)
+        migrated = Store(d).config
+        assert migrated["rotation"] == ["btc_price", "price_compare"], migrated
+        assert migrated["frames"] == {"price_compare": {"dwell": 2}}, migrated
+
+    def t_weather_compact_codes():
+        from sources import weather as weather_mod
+        frames = weather_mod._weather_frames(
+            {"lat": -33.86, "lon": 151.21, "place": "Sydney",
+             "city": "Sydney", "units": "C", "sunset_label": "DK"}, None)
+        by = {f["name"]: "".join(preview_slots(**{
+            k: v for k, v in f["slotargs"].items() if k != "color"}))
+              for f in frames}
+        expected = {"weather_temp": "TEMP 21", "weather_uv": "UV    7",
+                    "weather_wind": "WIND 18", "weather_humidity": "HUM  64",
+                    "weather_rain": "RAIN 80", "weather_air_pm25": "PM    6",
+                    "weather_air_aqi": "AQ   22"}
+        for fid, text in expected.items():
+            assert by[fid] == text, (fid, by[fid])
+        moon_text = by["weather_moon"]
+        assert moon_text.startswith("MOON") and moon_text[4:].strip().isdigit(), moon_text
+        assert ":" in by["weather_sunset"], by["weather_sunset"]
+
     def t_config_roundtrip():
         payload = {
             "write_interval_s": 90,
@@ -1802,12 +1874,12 @@ def selfcheck():
                 "enabled": True,
                 "options": {"exchange": "bitaroo", "currency": "AUD",
                             "bitaroo_api_key": stale}}},
-                "rotation": ["btc_price", "au_premium"]}, f)
+                "rotation": ["btc_price", "price_compare"]}, f)
         st2 = Store(d2)
         assert st2.config["sources"]["price"]["options"][
             "bitaroo_api_key"] == stale
         names = [fr["name"] for fr in build_frames(st2.config)]
-        assert names == ["btc_price", "au_premium"], names
+        assert names == ["btc_price", "price_compare"], names
         app2 = create_app(st2)
         app2.config["TESTING"] = True
         c2 = app2.test_client()
@@ -1824,42 +1896,48 @@ def selfcheck():
         assert st2.config["sources"]["price"]["options"][
             "bitaroo_api_key"] == stale
 
-    def t_au_premium_spread():
+    def t_price_compare():
         import clock as clock_mod
         from sources import price as price_mod
+        # default kraken vs coingecko: offline both legs are the same synthetic
+        # spot -> +0.00%, rendered SIGNED and tinted green
         d = c.get("/api/preview").get_json()
         by = {f["name"]: f for f in d["frames"]}
-        # synthetic: Bitaroo mid 165,050 vs AUD spot 165,000 -> +0.03%,
-        # rendered SIGNED and tinted green; spread (300/165050) -> 0.18%
-        assert "".join(by["au_premium"]["slots"]).strip() == "+0.03", \
-            by["au_premium"]["slots"]
-        assert by["au_premium"]["color"] == clock_mod.LED_GREEN
-        assert "".join(by["au_spread"]["slots"]).strip() == "0.18", \
-            by["au_spread"]["slots"]
-        # a discount renders with a minus and goes red
-        real = price_mod.SYNTHETIC_BITAROO
-        price_mod.SYNTHETIC_BITAROO = dict(real, bid=163_000.0,
-                                           ask=163_200.0)
+        assert "".join(by["price_compare"]["slots"]).strip() == "+0.00", \
+            by["price_compare"]["slots"]
+        assert by["price_compare"]["color"] == clock_mod.LED_GREEN
+        # force a real spread by overriding the two quotes: A above B -> signed
+        # positive %, green; B above A -> negative, red
+        real = price_mod.get_quote
+
+        def fake(pa, pb):
+            q = {"compare_a": "kraken", "compare_b": "coingecko",
+                 "compare_currency": "USD"}
+            price_mod.get_quote = lambda ex, ccy, options=None: (
+                {"price": {"kraken": pa, "coingecko": pb}.get(ex),
+                 "change": None} if ex in ("kraken", "coingecko")
+                else real(ex, ccy, options))
+            return q
         try:
-            frames = price_mod._price_frames({"exchange": "coinbase",
-                                              "currency": "USD"}, None)
-            byn = {f["name"]: f for f in frames}
-            assert byn["au_premium"]["slotargs"]["number"] == "-1.15", byn
-            assert byn["au_premium"]["slotargs"]["color"] \
+            byn = {f["name"]: f for f in price_mod._price_frames(
+                fake(110_000.0, 100_000.0), {"price_compare"})}
+            assert byn["price_compare"]["slotargs"]["number"] == "+10.00", byn
+            assert byn["price_compare"]["slotargs"]["color"] \
+                == clock_mod.LED_GREEN
+            byn = {f["name"]: f for f in price_mod._price_frames(
+                fake(100_000.0, 110_000.0), {"price_compare"})}
+            assert byn["price_compare"]["slotargs"]["color"] \
                 == clock_mod.LED_RED
+            # a missing leg -> the frame SKIPS cleanly, nothing crashes
+            price_mod.get_quote = lambda ex, ccy, options=None: (
+                None if ex == "kraken"
+                else {"price": 100_000.0, "change": None})
+            frames = price_mod._price_frames(
+                {"compare_a": "kraken", "compare_b": "coingecko"},
+                {"price_compare"})
+            assert "price_compare" not in {f["name"] for f in frames}
         finally:
-            price_mod.SYNTHETIC_BITAROO = real
-        # either leg missing -> the frames SKIP cleanly, nothing crashes
-        price_mod.SYNTHETIC_BITAROO = {"last": None, "high": None,
-                                       "low": None, "change_pct": None,
-                                       "bid": None, "ask": None}
-        try:
-            frames = price_mod._price_frames({"exchange": "coinbase",
-                                              "currency": "USD"}, None)
-            names = {f["name"] for f in frames}
-            assert "au_premium" not in names and "au_spread" not in names
-        finally:
-            price_mod.SYNTHETIC_BITAROO = real
+            price_mod.get_quote = real
 
     def t_brk_analytics():
         from sources import brk as brk_mod
@@ -2352,6 +2430,12 @@ def selfcheck():
         ("7-slot / sym-drop / pair rules", t_slot_rules),
         ("config: interval < 65 rejected", t_config_rejects_fast_interval),
         ("config: bad currency rejected", t_config_rejects_bad_currency),
+        ("config: spread pair compatibility validated",
+         t_price_compare_validation),
+        ("config: legacy AU frames migrate to price comparison",
+         t_legacy_price_rotation_migration),
+        ("weather: compact big-slot codes + sunset colon",
+         t_weather_compact_codes),
         ("config: save + geocode + rotation cleanup", t_config_roundtrip),
         ("preview follows saved rotation", t_preview_follows_rotation),
         ("GET /api/geocode: typeahead shape, blank-safe, offline synthetic",
@@ -2394,8 +2478,8 @@ def selfcheck():
          t_price_providers),
         ("price: stale bitaroo_api_key config loads, redacts, ignores",
          t_bitaroo_stale_key_config),
-        ("price: AU premium/spread signed, tinted, skip-clean",
-         t_au_premium_spread),
+        ("price: cross-source spread signed, tinted, skip-clean",
+         t_price_compare),
         ("brk: analytics category, every series offline in 7-slot rules",
          t_brk_analytics),
         ("node: core/lnd cred gating + base_url scheme rule",

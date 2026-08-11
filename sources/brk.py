@@ -15,6 +15,9 @@ BRK_VECS = "https://bitview.space/api/vecs"
 BRK_TTL_S = 21_600   # daily series: refresh ~4x a day, serve stale on a blip
 
 # frame id -> (BRK series name, catalogue label). Order = catalogue order.
+# The second block are the "cohort" metrics popularised by checkonchain -
+# bitview.space serves them keyless too, so no fragile chart-scraping is
+# needed to answer "can we show checkonchain-style stats?".
 SERIES = {
     "sats_per_usd":   ("price_close_sats", "Sats per USD"),
     "mvrv":           ("mvrv", "MVRV ratio"),
@@ -25,6 +28,13 @@ SERIES = {
     "price_ath":      ("price_ath", "All-time high (USD)"),
     "supply":         ("supply", "BTC supply (M)"),
     "market_cap":     ("market_cap", "Market cap ($T)"),
+    "sth_mvrv":       ("sth_mvrv", "STH-holder MVRV"),
+    "lth_mvrv":       ("lth_mvrv", "LTH-holder MVRV"),
+    "aviv":           ("aviv_ratio", "AVIV ratio"),
+    "liveliness":     ("liveliness", "Liveliness"),
+    "sth_cost":       ("sth_realized_price", "STH cost basis (USD)"),
+    "lth_cost":       ("lth_realized_price", "LTH cost basis (USD)"),
+    "thermocap_mult": ("thermo_cap_multiple", "Thermocap multiple"),
 }
 
 SYNTHETIC_BRK = {
@@ -37,6 +47,13 @@ SYNTHETIC_BRK = {
     "price_ath": 125_651.43,
     "supply": 20_068_154.26,
     "market_cap": 1_297_065_415_669.0,
+    "sth_mvrv": 0.941,
+    "lth_mvrv": 1.273,
+    "aviv_ratio": 0.695,
+    "liveliness": 0.634,
+    "sth_realized_price": 67_297.0,
+    "lth_realized_price": 49_722.0,
+    "thermo_cap_multiple": 13.75,
 }
 
 
@@ -136,6 +153,14 @@ _RENDERERS = {
     "price_ath":      _int_render("all-time high", "USD"),
     "supply":         _scaled_render("supply", "M BTC", 1e6),
     "market_cap":     _scaled_render("mkt cap", "$T", 1e12),
+    # cohort metrics: STH/LTH MVRV wear the same value-zone/overheated bands
+    "sth_mvrv":       _ratio_render("STH MVRV", "ratio", _mvrv_color),
+    "lth_mvrv":       _ratio_render("LTH MVRV", "ratio", _mvrv_color),
+    "aviv":           _ratio_render("AVIV", "ratio"),
+    "liveliness":     _ratio_render("liveliness"),
+    "sth_cost":       _int_render("STH cost", "basis USD"),
+    "lth_cost":       _int_render("LTH cost", "basis USD"),
+    "thermocap_mult": _ratio_render("thermocap", "multiple"),
 }
 
 
@@ -173,8 +198,10 @@ register_source(
     category="analytics",
     description="Daily on-chain analytics from the Bitcoin Research Kit "
                 "(bitview.space, keyless): MVRV, NUPL, Puell, realized "
-                "price, days since ATH, supply and market cap. USD-based, "
-                "updated once a day.",
+                "price, days since ATH, supply, market cap, plus the "
+                "checkonchain-style cohort set - short/long-term-holder MVRV "
+                "and cost basis, AVIV, liveliness and the thermocap multiple. "
+                "USD-based, updated once a day.",
     frames=[(fid, label) for fid, (_s, label) in SERIES.items()],
     builder=_brk_frames,
     options_schema={

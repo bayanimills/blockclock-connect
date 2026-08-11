@@ -21,6 +21,9 @@ DEFAULT_CONFIG = {
     "sources": {
         "price": {"enabled": True, "options": {"exchange": "coinbase",
                                                "currency": "USD",
+                                               "compare_a": "kraken",
+                                               "compare_b": "coingecko",
+                                               "compare_currency": "USD",
                                                "bitaroo_api_key": ""}},
         "network": {"enabled": True,
                     "options": {"stats": ["block_height", "fees", "halving"]}},
@@ -43,9 +46,11 @@ DEFAULT_CONFIG = {
         "weather": {"enabled": False,
                     "options": {"city": "", "units": "C", "lat": None,
                                 "lon": None, "place": None,
+                                "sunset_label": "SS",
                                 "show_condition": False}},
         "macro": {"enabled": False,
                   "options": {"forex_base": "USD", "forex_quote": "AUD",
+                              "metal_currency": "USD",
                               "fred_api_key": ""}},
         "space": {"enabled": False,
                   "options": {"countdown_label": "countdown",
@@ -111,11 +116,44 @@ class Store:
                     if attr == "_config":
                         merged = copy.deepcopy(DEFAULT_CONFIG)
                         merged.update(data or {})
+                        self._migrate_config(merged)
                         self._config = merged
                     else:
                         self._state = data or {}
             except Exception as e:
                 log.warning("could not load %s: %r (using defaults)", path, e)
+
+    @staticmethod
+    def _migrate_config(config):
+        """Apply small, lossless upgrades to persisted configuration.
+
+        Both former AU price frames are represented by the configurable
+        cross-source comparison in 0.5.0. Replace either legacy id in-place,
+        deduplicating when a rotation contained both, so an upgrade cannot
+        silently empty or shorten the user's rotation.
+        """
+        legacy = {"au_premium": "price_compare",
+                  "au_spread": "price_compare"}
+        rotation, seen = [], set()
+        for item in config.get("rotation") or []:
+            if isinstance(item, dict):
+                item = dict(item)
+                item["id"] = legacy.get(item.get("id"), item.get("id"))
+                fid = item.get("id")
+            else:
+                item = legacy.get(item, item)
+                fid = item
+            if fid not in seen:
+                rotation.append(item)
+                seen.add(fid)
+        config["rotation"] = rotation
+
+        settings = config.get("frames")
+        if isinstance(settings, dict):
+            for old in ("au_premium", "au_spread"):
+                if old in settings:
+                    settings.setdefault("price_compare", settings[old])
+                    settings.pop(old, None)
 
     def _write(self, path, data):
         try:

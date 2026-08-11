@@ -8,8 +8,9 @@ token; a bitaroo_api_key saved by an older version is simply ignored).
 
 Frames: the price itself, 24h change % (where the exchange serves one),
 sats-per-unit, Moscow time (sats per USD, maximum Bitcoin culture), the
-price in gold ounces (via gold-api XAU spot), and the cross-source AU pair:
-the Bitaroo-vs-global-spot AU premium % and the Bitaroo bid/ask spread %.
+price in gold ounces (via gold-api XAU spot), and a configurable cross-source
+spread - the % gap between any two exchanges you pick (Kraken vs CoinGecko by
+default), the honest way to watch a regional or venue premium.
 """
 
 import urllib.parse
@@ -63,6 +64,15 @@ EXCHANGES = {
                         "ccys": ["AUD", "EUR", "CHF"], "change": False,
                         "note": "Peach's P2P market rate (their offer "
                                 "index), not a traded last price."},
+}
+
+# Short codes for the cross-source spread frame's small labels (the device's
+# tl/br lines are narrow, so "KRK v CGK" reads far better than the full names).
+EXCHANGE_CODE = {
+    "coinbase": "CB", "mempool": "MEM", "kraken": "KRK", "bitstamp": "BST",
+    "btcmarkets": "BTM", "coinjar": "CJ", "blockchain_info": "BCI",
+    "bitfinex": "BFX", "gemini": "GEM", "binance": "BNB", "coingecko": "CGK",
+    "bitaroo": "BTR", "peach": "PCH",
 }
 
 
@@ -403,40 +413,29 @@ def _price_frames(options, wanted=None):
                     show_number_path(val, tl="BTC in gold", br="ounces"),
                     number=val, color=LED_AMBER))
 
-    # ---- the AU cross-source pair: Bitaroo vs global spot ----
-    # Skips cleanly whenever either leg is unavailable - never crashes.
-    if want("au_premium") or want("au_spread"):
-        md = bitaroo_market()
-        bid = md.get("bid") if isinstance(md, dict) else None
-        ask = md.get("ask") if isinstance(md, dict) else None
-        # mid-price for a steadier premium; fall back to the last trade
-        mid = (bid + ask) / 2 if bid and ask else \
-            (md.get("last") if isinstance(md, dict) else None)
-        if want("au_premium") and mid:
-            # global-spot baseline: mempool.space's AUD field (the same
-            # cached getter the mempool exchange uses - no second call)
-            spot_q = get_quote("mempool", "AUD")
-            spot = spot_q.get("price") if spot_q else None
-            if spot:
-                prem = (mid / spot - 1) * 100
-                val = f"{prem:+.2f}"  # signed, e.g. +0.34 / -0.12
-                if len(val) <= 7:
-                    frames.append(_frame(
-                        "au_premium",
-                        show_number_path(val, tl="AU premium",
-                                         br="vs spot"),
-                        number=val,
-                        color=LED_GREEN if prem >= 0 else LED_RED))
-        if want("au_spread") and bid and ask:
-            m = (bid + ask) / 2
-            if m > 0:
-                val = f"{(ask - bid) / m * 100:.2f}"
-                if len(val) <= 7:
-                    frames.append(_frame(
-                        "au_spread",
-                        show_number_path(val, tl="Bitaroo",
-                                         br="spread %"),
-                        number=val, color=LED_AMBER))
+    # ---- configurable cross-source spread: exchange A vs exchange B ----
+    # The signed % gap (A/B - 1) between any two exchanges you pick - the
+    # honest, general form of a regional/venue premium. Skips cleanly whenever
+    # either leg is unavailable (unsupported pair or a down exchange).
+    if want("price_compare"):
+        a_id = options.get("compare_a") or "kraken"
+        b_id = options.get("compare_b") or "coingecko"
+        cccy = options.get("compare_currency") or "USD"
+        qa = get_quote(a_id, cccy, options)
+        qb = get_quote(b_id, cccy, options)
+        pa = qa.get("price") if qa else None
+        pb = qb.get("price") if qb else None
+        if pa and pb and a_id != b_id:
+            spread = (pa / pb - 1) * 100
+            val = f"{spread:+.2f}"  # signed, e.g. +0.34 / -0.12
+            if len(val) <= 7:
+                ca = EXCHANGE_CODE.get(a_id, a_id[:3].upper())
+                cb = EXCHANGE_CODE.get(b_id, b_id[:3].upper())
+                frames.append(_frame(
+                    "price_compare",
+                    show_number_path(val, tl=f"{ca} v {cb}", br="spread %"),
+                    number=val,
+                    color=LED_GREEN if spread >= 0 else LED_RED))
     return frames
 
 
@@ -446,16 +445,15 @@ register_source(
     category="price",
     description="Live BTC price from your choice of exchange (all keyless - "
                 "no API keys), plus 24h change, sats per unit, Moscow time, "
-                "the price in gold ounces, and the Bitaroo-vs-global AU "
-                "premium and spread.",
+                "the price in gold ounces, and a cross-source spread that "
+                "compares any two exchanges you pick.",
     frames=[
         ("btc_price", "Bitcoin price"),
         ("price_change", "24h change %"),
         ("sats_per_unit", "Sats per unit"),
         ("moscow_time", "Moscow time (sats/USD)"),
         ("price_gold", "Price in gold oz"),
-        ("au_premium", "AU premium vs spot"),
-        ("au_spread", "Bitaroo spread %"),
+        ("price_compare", "Exchange spread (A vs B)"),
     ],
     builder=_price_frames,
     options_schema={
@@ -469,6 +467,18 @@ register_source(
                      "default": "coinbase"},
         "currency": {"type": "select", "label": "Currency",
                      "choices": CURRENCIES, "default": "USD"},
+        "compare_a": {"type": "select", "label": "Spread: exchange A",
+                      "choices": [{"id": k, "label": v["label"],
+                                   "currencies": v["ccys"]}
+                                  for k, v in EXCHANGES.items()],
+                      "default": "kraken"},
+        "compare_b": {"type": "select", "label": "Spread: exchange B",
+                      "choices": [{"id": k, "label": v["label"],
+                                   "currencies": v["ccys"]}
+                                  for k, v in EXCHANGES.items()],
+                      "default": "coingecko"},
+        "compare_currency": {"type": "select", "label": "Spread: currency",
+                             "choices": CURRENCIES, "default": "USD"},
     },
     # DEPRECATED: Bitaroo went keyless. The key stays a declared secret so a
     # value saved by an older version keeps loading and stays redacted in

@@ -4,6 +4,30 @@ Notable changes to BlockClock Connect. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0]
+
+### Added
+- **Cross-source spread**: a configurable price frame comparing any two
+  exchanges you pick (Kraken vs CoinGecko by default), in the currency you
+  choose - the general form of a regional or venue premium.
+- **Gold/silver reference currency**: show metal spot in AUD/oz, EUR/oz and any
+  other currency, not only USD.
+- **Wider forex pairs**: pick from the full set of ECB currencies for the base
+  and quote, not just a handful.
+- **Sunset time** frame now shows the local sunset clock time with a choosable
+  2-character label (Sunset / Sundown / Dusk, or none), e.g. `SS18:42`.
+- **On-chain cohort analytics** (bitview.space, keyless): short- and long-term
+  holder MVRV and cost basis, AVIV ratio, liveliness and the thermocap
+  multiple - the checkonchain-style metrics, no chart-scraping needed.
+- **Compact environmental codes** in the large slots, with the code aligned
+  left and reading aligned right (`TEMP 21`, `UV    7`, `WIND 18`, `HUM  64`,
+  `RAIN 80`, `PM    6`, `AQ   22`, `MOON 82`), so each reading is identifiable
+  without relying on the small corner labels.
+
+### Changed
+- The old AU-premium and Bitaroo-spread frames are replaced by the single
+  configurable cross-source spread above; saved rotations migrate in place.
+
 ## [0.4.1]
 
 ### Added
