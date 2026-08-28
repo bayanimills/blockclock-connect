@@ -28,6 +28,8 @@ A single writer thread that owns the connected BLOCKCLOCK:
 import logging
 import threading
 import time
+import urllib.error
+from http.client import HTTPException
 
 from clock import ClockClient, lights_path, pause_path, pick_path, \
     preview_slots, update_rate_path
@@ -43,6 +45,13 @@ IDLE_POLL_S = 5
 
 MILESTONES = [1, 5, 10, 25, 50, 100]   # order-count celebrations per day
 MAX_PENDING_EVENTS = 6        # cap so a burst can't monopolise the screen
+
+# Transport failures are ROUTINE, not exceptional: the device stops
+# answering (or answers garbage) for 30-60s while it repaints. One bad
+# cycle costs one frame - it must never end the feeder.
+TRANSIENT_ERRORS = (HTTPException, urllib.error.URLError, OSError)
+FAIL_ALERT_AFTER = 5          # consecutive bad cycles before an ERROR
+FAIL_BACKOFF_MAX_S = 30       # cap on the post-failure pause
 
 
 class Feeder(threading.Thread):
@@ -62,6 +71,7 @@ class Feeder(threading.Thread):
         self._custom_request = None   # full frame dict queued by /agent/show
         self._last_color = None
         self.original_tag = None
+        self.push_fails = 0           # consecutive failed cycles
 
     # ------------------------------------------------------------------ API #
 
@@ -442,40 +452,57 @@ class Feeder(threading.Thread):
                     self.wake.wait(IDLE_POLL_S * 2)
                     continue
 
-                if not self.driving:
-                    self._start_driving()
+                # everything that talks to the device happens in here:
+                # a transport failure costs THIS cycle, nothing more
+                try:
+                    if not self.driving:
+                        self._start_driving()
+                        if self.stop_event.is_set():
+                            break
+
+                    # a pending sale/milestone event PREEMPTS the rotation:
+                    # exactly one event is drained per write window
+                    event_frame = None if test_frame \
+                        else self._next_shopify_event(cfg)
+
+                    if event_frame:
+                        frame = event_frame
+                        log.info("event: %s (%d more queued)", frame["name"],
+                                 len(self.store.state.get("pending_events")
+                                     or []))
+                    elif test_frame:
+                        frame = test_frame
+                        log.info("test frame: %s", frame["name"])
+                    else:
+                        frame = self._pick_rotation_frame(showable, settings,
+                                                          hour)
+                        log.info("rotate: %s", frame["name"])
+
+                    # absorb the rate window FIRST so the LED tint lands
+                    # seconds (not a whole window) before its frame
+                    self.client._rate_wait()
                     if self.stop_event.is_set():
                         break
-
-                # a pending sale/milestone event PREEMPTS the rotation:
-                # exactly one event is drained per write window
-                event_frame = None if test_frame \
-                    else self._next_shopify_event(cfg)
-
-                if event_frame:
-                    frame = event_frame
-                    log.info("event: %s (%d more queued)", frame["name"],
-                             len(self.store.state.get("pending_events")
-                                 or []))
-                elif test_frame:
-                    frame = test_frame
-                    log.info("test frame: %s", frame["name"])
-                else:
-                    frame = self._pick_rotation_frame(showable, settings,
-                                                      hour)
-                    log.info("rotate: %s", frame["name"])
-
-                # absorb the rate window FIRST so the LED tint lands seconds
-                # (not a whole window) before its frame
-                self.client._rate_wait()
-                if self.stop_event.is_set():
-                    break
-                if event_frame:
-                    self._celebrate_lights(frame, cfg)
-                else:
-                    self._set_lights(frame["slotargs"].get("color"))
-                accepted = self.client.push(frame["path"])  # window spent
-                self._record_frame(frame, accepted)
+                    if event_frame:
+                        self._celebrate_lights(frame, cfg)
+                    else:
+                        self._set_lights(frame["slotargs"].get("color"))
+                    accepted = self.client.push(frame["path"])  # window spent
+                    self._record_frame(frame, accepted)
+                except TRANSIENT_ERRORS as e:
+                    self.push_fails += 1
+                    log.warning("cycle failed (%d in a row): %r",
+                                self.push_fails, e)
+                    if self.push_fails >= FAIL_ALERT_AFTER:
+                        log.error("clock %s has taken no frame for %d "
+                                  "cycles", self.client.host,
+                                  self.push_fails)
+                    # bounded backoff, interruptible: a stop still lands
+                    # promptly
+                    self.stop_event.wait(min(5 * self.push_fails,
+                                             FAIL_BACKOFF_MAX_S))
+                    continue
+                self.push_fails = 0
         except Exception:
             log.exception("feeder crashed")
         finally:

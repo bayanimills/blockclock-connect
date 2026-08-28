@@ -2121,6 +2121,69 @@ def selfcheck():
                     if feeder._window_ok(settings.get(f["name"]), 20)]
         assert showable == []
 
+    def t_push_survives_garbage_reply():
+        # mid-repaint the device answers garbage instead of a status line;
+        # that means "it took the frame and went dark", not a crash
+        from clock import ClockClient
+        from http.client import BadStatusLine
+
+        client = ClockClient("192.0.2.9")
+
+        def boom(path, timeout=40):
+            raise BadStatusLine("<pre>")
+
+        client._get = boom
+        assert client.push(show_number_path(1), respect_rate=False) is True
+
+    def t_feeder_survives_push_failure():
+        # one failed push costs ONE cycle - the feeder keeps rotating
+        from http.client import BadStatusLine
+        import feeder as feeder_mod
+
+        class FlakyClient:
+            host = "192.0.2.9"
+
+            def __init__(self):
+                self.write_interval_s = MIN_WRITE_INTERVAL_S
+                self._last_write = 0.0
+                self.stop_event = None
+                self.shows = 0
+
+            def status(self, timeout=15):
+                return None
+
+            def seconds_until_ready(self):
+                return 0.0
+
+            def _rate_wait(self):
+                pass
+
+            def push(self, path, respect_rate=True, _tries=2, timeout=40):
+                if path.startswith("/api/show"):
+                    self.shows += 1
+                    if self.shows == 1:
+                        raise BadStatusLine("<pre>")
+                    f2.stop_event.set()   # a second frame proves it went on
+                return True
+
+        s2 = Store(tempfile.mkdtemp(prefix="blockclock-selfcheck-"))
+        cfg2 = s2.config
+        cfg2["clock"] = {"ip": "192.0.2.9", "model": "BLOCKCLOCK mini",
+                         "version": "test"}
+        s2.save_config(cfg2)
+        f2 = Feeder(s2)
+        fake = FlakyClient()
+        f2._new_client = lambda ip, interval: fake
+        backoff = feeder_mod.FAIL_BACKOFF_MAX_S
+        feeder_mod.FAIL_BACKOFF_MAX_S = 0      # no real waiting in a test
+        try:
+            f2.run()                           # returns; must not raise
+        finally:
+            feeder_mod.FAIL_BACKOFF_MAX_S = backoff
+        assert fake.shows == 2, fake.shows
+        assert f2.push_fails == 0, f2.push_fails
+        assert f2.last_frame and f2.last_frame["accepted"] is True
+
     def t_test_accepts_any_enabled_frame():
         # /api/test may push ANY frame an enabled source can build - even one
         # that is not in the rotation
@@ -2496,6 +2559,10 @@ def selfcheck():
          t_strict_rotation_is_the_picker),
         ("feeder: dwell + window honoured in a simulated cycle",
          t_dwell_and_window_simulated),
+        ("clock: a garbage reply mid-repaint counts as accepted",
+         t_push_survives_garbage_reply),
+        ("feeder: a failed push costs one cycle, not the thread",
+         t_feeder_survives_push_failure),
         ("test push accepts any enabled frame id",
          t_test_accepts_any_enabled_frame),
         ("api access: OFF by default, agent endpoints 403, echo redacted",
