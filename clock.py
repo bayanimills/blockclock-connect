@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.client import RemoteDisconnected
+from http.client import HTTPException
 
 log = logging.getLogger("blockclock")
 
@@ -164,8 +164,9 @@ class ClockClient:
         taken. Outcomes, distinguished carefully:
 
           * clean 2xx reply         -> accepted (True)
-          * no reply / conn reset   -> device went dark to repaint (30-60s);
-                                       EXPECTED right after a write -> True
+          * no reply / conn reset / -> device went dark to repaint (30-60s);
+            garbage instead of a       EXPECTED right after a write -> True
+            status line
           * HTTP 429 (rate limited) -> NOT accepted; wait a full window, retry.
                                        Out of retries -> give up (False)
           * other HTTP error        -> device answered with an error -> False
@@ -199,8 +200,10 @@ class ClockClient:
             self._last_write = time.time()
             log.info("push %s -> HTTP %s; not accepted", path, e.code)
             return False
-        except (urllib.error.URLError, RemoteDisconnected, TimeoutError, OSError) as e:
-            # no reply / reset right after a write == it took the frame, went dark
+        except (urllib.error.URLError, HTTPException, TimeoutError, OSError) as e:
+            # no reply / reset / an unparseable half-answer right after a write
+            # == it took the frame and went dark (HTTPException covers
+            # BadStatusLine and RemoteDisconnected)
             self._last_write = time.time()
             log.info("push %s -> no clean reply (%r); treating as accepted "
                      "(repaint stall)", path, e)

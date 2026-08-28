@@ -4,6 +4,15 @@ Notable changes to BlockClock Connect. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- The feeder no longer stops for good when the clock fails to answer a
+  push. A transport error now costs a single cycle: it is logged, a
+  bounded (interruptible) backoff applies, and the rotation resumes.
+  A reply the device sends mid-repaint that is not a valid HTTP status
+  line is treated like the other repaint-stall replies, as accepted.
+
 ## [0.5.0]
 
 ### Added
