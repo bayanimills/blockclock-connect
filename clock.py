@@ -14,7 +14,8 @@ verified against real hardware and must not be "simplified":
   * /api/status is unmetered and safe to poll; it is the discovery fingerprint
     ("is_micro", "version") and the verification oracle.
   * an optional System Password makes the device demand HTTP Digest auth with
-    an EMPTY username. Every request to the clock goes through `open_clock`,
+    username "admin" (firmware 1.2.3 rejects an empty username even with the
+    right password; any non-empty name is accepted). Every request to the clock goes through `open_clock`,
     the single place that applies it.
 """
 
@@ -71,12 +72,16 @@ class _DigestOnce(urllib.request.HTTPDigestAuthHandler):
         return super().retry_http_digest_auth(req, auth)
 
 
+CLOCK_USERNAME = "admin"
+
+
 def build_opener(base, password=""):
     handlers = []
     if password:
         mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-        # digest with an EMPTY username, per the vendor spec
-        mgr.add_password(None, base, "", password)
+        # the device challenges with realm "... (user: admin)" and rejects an
+        # empty username, so answer as "admin"
+        mgr.add_password(None, base, CLOCK_USERNAME, password)
         handlers.append(_DigestOnce(mgr))
     return urllib.request.build_opener(*handlers)
 

@@ -6,6 +6,13 @@ Notable changes to BlockClock Connect. Format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-06
+
+### Fixed
+- Clock System Password: authenticate as user `admin`. The device rejects an
+  empty Digest username even with the correct password, so 0.6.0 could not
+  talk to a password-protected clock.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added

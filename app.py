@@ -2238,8 +2238,8 @@ def selfcheck():
     BAD_PW = "wrong-pass-0042"
 
     class FakeClock:
-        """A local stand-in for the clock's digest-protected HTTP API: empty
-        username, MD5, qop=auth. Records every request it sees."""
+        """A local stand-in for the clock's digest-protected HTTP API: username
+        "admin", MD5, qop=auth. Records every request it sees."""
 
         def __init__(self, password=""):
             import hashlib
@@ -2266,7 +2266,7 @@ def selfcheck():
                     ha2 = md5(f"GET:{f.get('uri')}")
                     want = md5(f"{ha1}:{f.get('nonce')}:{f.get('nc')}:"
                                f"{f.get('cnonce')}:{f.get('qop')}:{ha2}")
-                    return f.get("username") == "" and \
+                    return f.get("username") == "admin" and \
                         f.get("response") == want
 
                 def do_GET(self):
@@ -2276,7 +2276,7 @@ def selfcheck():
                         self.send_response(401)
                         self.send_header(
                             "WWW-Authenticate",
-                            'Digest realm="blockclock", qop="auth", '
+                            'Digest realm="Blockclock MINI (user: admin)", qop="auth", '
                             'nonce="abc123", algorithm=MD5')
                         self.send_header("Content-Length", "0")
                         self.end_headers()
@@ -2314,10 +2314,10 @@ def selfcheck():
             client = ClockClient(fake.host, password=PW)
             st = client.status()
             assert st and st["version"] == "1.2.3", st
-            # challenged once, then answered with an empty-username digest
+            # challenged once, then answered with an "admin" digest
             assert [a is None for _, a in fake.requests] == [True, False], \
                 fake.requests
-            assert 'username=""' in fake.requests[1][1], fake.requests
+            assert 'username="admin"' in fake.requests[1][1], fake.requests
             assert PW not in fake.requests[1][1]
             assert client.push("/api/action/pause", respect_rate=False)
         finally:
@@ -2819,7 +2819,7 @@ def selfcheck():
          t_test_accepts_any_enabled_frame),
         ("clock: no password sends no auth header",
          t_clock_no_password_no_auth),
-        ("clock: digest challenge answered (empty username)",
+        ("clock: digest challenge answered (username admin)",
          t_clock_digest_challenge_answered),
         ("clock: 401 wrong/missing password is an auth error, not offline",
          t_clock_wrong_or_missing_password_is_auth_error),

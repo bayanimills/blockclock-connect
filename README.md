@@ -70,7 +70,8 @@ publishes the multi-arch image to `ghcr.io/bayanimills/blockclock-connect`.
 
 The BLOCKCLOCK can protect its setup page and API with a **System Password**
 (clock web UI: `/prefs` -> *System Password*). The clock then requires HTTP
-Digest auth with an empty username. To keep BlockClock Connect working:
+Digest auth; BlockClock Connect answers as user `admin` (the device rejects
+an empty username). To keep BlockClock Connect working:
 
 1. Set the password on the clock.
 2. In the app, type the same password in the *System password* field and
