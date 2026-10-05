@@ -6,6 +6,8 @@ Notable changes to BlockClock Connect. Format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-06
+
 ### Added
 - Optional clock System Password support (HTTP Digest, empty username):
   a password field in the connect card, `clock.password` in config or the
