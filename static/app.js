@@ -1483,12 +1483,17 @@ async function scan() {
   }
 }
 
-async function connect(ip, btn) {
+async function connect(ip, btn, pwId = "clock-password") {
   const err = $("connect-error");
   err.hidden = true;
   if (btn) btn.disabled = true;
   try {
-    const d = await api("/api/connect", { method: "POST", body: { ip } });
+    // write-only: sent, never read back; blank keeps the saved one
+    const password = $(pwId).value;
+    const d = await api("/api/connect",
+                        { method: "POST", body: { ip, password } });
+    $("clock-password").value = "";
+    $("clock-password-update").value = "";
     toast(`Connected to ${d.clock.model} at ${d.clock.ip}`);
     await pollState();
     updateCards();
@@ -1497,6 +1502,7 @@ async function connect(ip, btn) {
   } catch (e) {
     err.textContent = e.message;
     err.hidden = false;
+    if (S.connected) toast(e.message, true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1519,6 +1525,9 @@ async function disconnect() {
 
 function applyStateView(d) {
   S.connected = d.connected || null;
+  const clockErr = $("clock-error");
+  clockErr.textContent = d.clock_error || "";
+  clockErr.hidden = !d.clock_error;
   S.running = !!d.running;
   S.nextWriteS = d.next_write_in_s;
   $("offline-pill").hidden = !d.offline;
@@ -1747,6 +1756,11 @@ async function init() {
     }
   });
   $("btn-disconnect").addEventListener("click", disconnect);
+  $("btn-password").addEventListener("click", () => {
+    if (S.connected) {
+      connect(S.connected.ip, $("btn-password"), "clock-password-update");
+    }
+  });
   $("btn-save").addEventListener("click", () => save(false));
   $("btn-discard").addEventListener("click", discard);
   $("btn-play").addEventListener("click", () => {

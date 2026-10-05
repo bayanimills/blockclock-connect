@@ -13,8 +13,9 @@ import ipaddress
 import json
 import logging
 import socket
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from clock import ClockAuthError, open_clock
 
 log = logging.getLogger("discovery")
 
@@ -51,13 +52,12 @@ def parse_subnet(subnet):
     return hosts
 
 
-def probe(ip, timeout=PROBE_TIMEOUT_S):
+def probe(ip, timeout=PROBE_TIMEOUT_S, password=""):
     """GET http://ip/api/status; return {ip, model, version} if it looks like
-    a BLOCKCLOCK, else None. Never raises."""
+    a BLOCKCLOCK, else None. Raises only ClockAuthError (the host answered
+    401), so a connect can say "password needed" instead of "not found"."""
     try:
-        req = urllib.request.Request(f"http://{ip}/api/status",
-                                     headers={"User-Agent": "blockclock-connect/1"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_clock(f"http://{ip}", "/api/status", password, timeout) as r:
             d = json.loads(r.read().decode("utf-8", "replace"))
         if not isinstance(d, dict):
             return None
@@ -68,7 +68,17 @@ def probe(ip, timeout=PROBE_TIMEOUT_S):
             "model": "BLOCKCLOCK micro" if d.get("is_micro") else "BLOCKCLOCK mini",
             "version": str(d.get("version", "?")),
         }
+    except ClockAuthError:
+        raise
     except Exception:
+        return None
+
+
+def _scan_probe(ip):
+    # the sweep never sends a password to hosts that are not known clocks
+    try:
+        return probe(ip)
+    except ClockAuthError:
         return None
 
 
@@ -87,7 +97,7 @@ def scan(subnet):
 
     found = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {pool.submit(probe, ip): ip for ip in hosts}
+        futures = {pool.submit(_scan_probe, ip): ip for ip in hosts}
         for fut in as_completed(futures):
             hit = fut.result()
             if hit:

@@ -29,7 +29,8 @@ from flask import Flask, jsonify, request
 
 import discovery
 import sources
-from clock import SLOTS, preview_slots, show_number_path, show_text_path
+from clock import SLOTS, ClockAuthError, clock_password, preview_slots, \
+    show_number_path, show_text_path
 from feeder import Feeder
 from sources import CATEGORIES, CURRENCIES, DEFAULT_SHOPIFY_FRAMES, \
     FRAME_DEFS, NETWORK_STATS, SHOPIFY_FRAMES, build_frames, catalogue, \
@@ -490,6 +491,17 @@ def public_config(cfg):
     return out
 
 
+def public_clock(cfg):
+    """The saved clock as any API response may see it: the System Password is
+    NEVER echoed, only whether one is set."""
+    clock = cfg.get("clock")
+    if not clock:
+        return None
+    return {"ip": clock.get("ip"), "model": clock.get("model"),
+            "version": clock.get("version"),
+            "password_set": bool(clock_password(clock))}
+
+
 def new_api_token():
     """A fresh agent bearer token: a recognisable prefix + 32 bytes of
     CSPRNG entropy (urlsafe, ~43 chars)."""
@@ -752,7 +764,8 @@ def create_app(store, feeder=None):
         last_frame = (feeder.last_frame if feeder else None) \
             or state.get("last_frame")
         return jsonify({
-            "connected": cfg.get("clock"),
+            "connected": public_clock(cfg),
+            "clock_error": feeder.auth_error if feeder else None,
             "running": bool(feeder and feeder.driving),
             "config": public_config(cfg),  # never includes the Shopify token
             "last_frame": last_frame,
@@ -777,14 +790,28 @@ def create_app(store, feeder=None):
         ip = str(body.get("ip") or "").strip()
         if not ip or "/" in ip or " " in ip:
             return jerr("Enter the clock's IP address, e.g. 192.168.1.50")
-        clockinfo = discovery.probe(ip, timeout=5)
+        # blank password = keep the saved one (same clock only); the env var
+        # override, when set, wins at use time either way
+        password = body.get("password")
+        password = password if isinstance(password, str) else ""
+        if len(password) > 128:
+            return jerr("That password is too long for the clock")
+        cfg = store.config
+        saved = cfg.get("clock") or {}
+        if not password and saved.get("ip") == ip:
+            password = str(saved.get("password") or "")
+        try:
+            clockinfo = discovery.probe(
+                ip, timeout=5, password=clock_password({"password": password}))
+        except ClockAuthError as e:
+            return jerr(str(e), 502)
         if not clockinfo:
             return jerr(f"No BLOCKCLOCK answered at {ip}. Check the IP and "
                         "that the clock is on the same network. (If you just "
                         "pushed something to it, it repaints for 30-60s and "
                         "won't answer - try again in a minute.)", 502)
-        cfg = store.config
-        cfg["clock"] = clockinfo
+        cfg["clock"] = dict(clockinfo, password=password) if password \
+            else clockinfo
         store.save_config(cfg)
         if feeder:
             feeder.notify_config_changed()
@@ -2142,6 +2169,7 @@ def selfcheck():
 
         class FlakyClient:
             host = "192.0.2.9"
+            password = ""
 
             def __init__(self):
                 self.write_interval_s = MIN_WRITE_INTERVAL_S
@@ -2203,6 +2231,230 @@ def selfcheck():
             cfg["clock"] = None
             store.save_config(cfg)
             feeder._pop_test()  # drop the queued test; nothing is connected
+
+    # ----------------------------------------- clock system password ----- #
+
+    PW = "s3cret-Pass word!"       # right password; spaces on purpose
+    BAD_PW = "wrong-pass-0042"
+
+    class FakeClock:
+        """A local stand-in for the clock's digest-protected HTTP API: empty
+        username, MD5, qop=auth. Records every request it sees."""
+
+        def __init__(self, password=""):
+            import hashlib
+            import http.server
+            import threading
+            owner = self
+            self.password = password
+            self.requests = []     # (path, Authorization header or None)
+
+            def md5(x):
+                return hashlib.md5(x.encode()).hexdigest()
+
+            class H(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *a):
+                    pass
+
+                def _authorised(self):
+                    h = self.headers.get("Authorization")
+                    if not h or not h.startswith("Digest "):
+                        return False
+                    f = dict(re.findall(r'(\w+)="?([^",]*)"?', h[7:]))
+                    ha1 = md5(f"{f.get('username')}:{f.get('realm')}:"
+                              f"{owner.password}")
+                    ha2 = md5(f"GET:{f.get('uri')}")
+                    want = md5(f"{ha1}:{f.get('nonce')}:{f.get('nc')}:"
+                               f"{f.get('cnonce')}:{f.get('qop')}:{ha2}")
+                    return f.get("username") == "" and \
+                        f.get("response") == want
+
+                def do_GET(self):
+                    owner.requests.append(
+                        (self.path, self.headers.get("Authorization")))
+                    if owner.password and not self._authorised():
+                        self.send_response(401)
+                        self.send_header(
+                            "WWW-Authenticate",
+                            'Digest realm="blockclock", qop="auth", '
+                            'nonce="abc123", algorithm=MD5')
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    body = b'{"is_micro": false, "version": "1.2.3"}'
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            self.httpd = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), H)
+            self.host = f"127.0.0.1:{self.httpd.server_address[1]}"
+            threading.Thread(target=self.httpd.serve_forever,
+                             daemon=True).start()
+
+        def close(self):
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+    def t_clock_no_password_no_auth():
+        from clock import ClockClient
+        fake = FakeClock()
+        try:
+            st = ClockClient(fake.host).status()
+            assert st and st["version"] == "1.2.3", st
+            assert fake.requests == [("/api/status", None)], fake.requests
+        finally:
+            fake.close()
+
+    def t_clock_digest_challenge_answered():
+        from clock import ClockClient
+        fake = FakeClock(PW)
+        try:
+            client = ClockClient(fake.host, password=PW)
+            st = client.status()
+            assert st and st["version"] == "1.2.3", st
+            # challenged once, then answered with an empty-username digest
+            assert [a is None for _, a in fake.requests] == [True, False], \
+                fake.requests
+            assert 'username=""' in fake.requests[1][1], fake.requests
+            assert PW not in fake.requests[1][1]
+            assert client.push("/api/action/pause", respect_rate=False)
+        finally:
+            fake.close()
+
+    def t_clock_wrong_or_missing_password_is_auth_error():
+        from clock import ClockAuthError, ClockClient
+        fake = FakeClock(PW)
+        try:
+            for given, phrase in ((BAD_PW, "rejected"), ("", "requires")):
+                fake.requests.clear()
+                client = ClockClient(fake.host, password=given)
+                for call in (client.status,
+                             lambda: client.push("/api/action/pause",
+                                                 respect_rate=False)):
+                    try:
+                        call()
+                    except ClockAuthError as e:
+                        assert phrase in str(e), str(e)
+                        assert BAD_PW not in str(e) and PW not in str(e)
+                    else:
+                        raise AssertionError("401 was not an auth error")
+                # no retry loop: challenge + one answer per call, no storm
+                assert len(fake.requests) <= 4, len(fake.requests)
+        finally:
+            fake.close()
+
+    def t_clock_password_env_override():
+        from clock import PASSWORD_ENV, clock_password
+        assert clock_password({"password": "a"}) == "a"
+        assert clock_password({"ip": "x"}) == ""
+        assert clock_password(None) == ""
+        os.environ[PASSWORD_ENV] = "from-env"
+        try:
+            assert clock_password({"password": "a"}) == "from-env"
+        finally:
+            del os.environ[PASSWORD_ENV]
+
+    def t_connect_password_never_leaks():
+        import io
+        fake = FakeClock(PW)
+        buf = io.StringIO()
+        handler = logging.StreamHandler(buf)
+        root = logging.getLogger()
+        old_level = root.level
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
+        seen = []
+        try:
+            # no password / wrong password: clear auth error, nothing saved
+            for given, phrase in (("", "requires"), (BAD_PW, "rejected")):
+                r = c.post("/api/connect",
+                           json={"ip": fake.host, "password": given})
+                seen.append(r.data)
+                assert r.status_code == 502, r.get_json()
+                assert phrase in r.get_json()["error"], r.get_json()
+                assert not store.config.get("clock")
+            # right password: saved on disk, echoed nowhere
+            r = c.post("/api/connect",
+                       json={"ip": fake.host, "password": PW})
+            seen.append(r.data)
+            assert r.status_code == 200, r.get_json()
+            assert store.config["clock"]["password"] == PW
+            # blank password on the same clock keeps the saved one
+            r = c.post("/api/connect", json={"ip": fake.host})
+            seen.append(r.data)
+            assert r.status_code == 200, r.get_json()
+            assert store.config["clock"]["password"] == PW
+            s = c.get("/api/state")
+            seen.append(s.data)
+            conn = s.get_json()["connected"]
+            assert conn["password_set"] is True and "password" not in conn
+            # the client the feeder builds carries it
+            assert feeder._new_client(fake.host, 65).password == PW
+            for path in ("/api/sources", "/openapi.json"):
+                seen.append(c.get(path).data)
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(old_level)
+            cfg = store.config
+            cfg["clock"] = None
+            store.save_config(cfg)
+            fake.close()
+        for blob in seen:
+            assert PW.encode() not in blob and BAD_PW.encode() not in blob
+        assert PW not in buf.getvalue() and BAD_PW not in buf.getvalue()
+
+    def t_feeder_auth_error_is_surfaced_not_fatal():
+        # a 401 mid-run is reported, waited out, and never kills the feeder
+        import feeder as feeder_mod
+        from clock import ClockAuthError
+
+        class LockedClient:
+            host = "192.0.2.9"
+            password = ""
+
+            def __init__(self):
+                self.write_interval_s = MIN_WRITE_INTERVAL_S
+                self._last_write = 0.0
+                self.stop_event = None
+                self.pushes = 0
+                self.statuses = 0
+
+            def status(self, timeout=15):
+                self.statuses += 1
+                if self.statuses >= 2:
+                    f3.stop_event.set()
+                raise ClockAuthError("The clock requires a password.")
+
+            def seconds_until_ready(self):
+                return 0.0
+
+            def _rate_wait(self):
+                pass
+
+            def push(self, path, respect_rate=True, _tries=2, timeout=40):
+                self.pushes += 1
+                if self.pushes >= 2:
+                    f3.stop_event.set()
+                raise ClockAuthError("The clock requires a password.")
+
+        s3 = Store(tempfile.mkdtemp(prefix="blockclock-selfcheck-"))
+        cfg3 = s3.config
+        cfg3["clock"] = {"ip": "192.0.2.9", "model": "BLOCKCLOCK mini",
+                         "version": "test"}
+        s3.save_config(cfg3)
+        f3 = Feeder(s3)
+        fake = LockedClient()
+        f3._new_client = lambda ip, interval: fake
+        wait = feeder_mod.AUTH_RETRY_S
+        feeder_mod.AUTH_RETRY_S = 0
+        try:
+            f3.run()                           # returns; must not raise
+        finally:
+            feeder_mod.AUTH_RETRY_S = wait
+        assert f3.auth_error and "password" in f3.auth_error, f3.auth_error
+        assert fake.statuses == 2, fake.statuses   # retried once per wait
 
     # ------------------------------------------- agent / API access ----- #
 
@@ -2565,6 +2817,18 @@ def selfcheck():
          t_feeder_survives_push_failure),
         ("test push accepts any enabled frame id",
          t_test_accepts_any_enabled_frame),
+        ("clock: no password sends no auth header",
+         t_clock_no_password_no_auth),
+        ("clock: digest challenge answered (empty username)",
+         t_clock_digest_challenge_answered),
+        ("clock: 401 wrong/missing password is an auth error, not offline",
+         t_clock_wrong_or_missing_password_is_auth_error),
+        ("clock: env var overrides the configured password",
+         t_clock_password_env_override),
+        ("clock: password never in logs, responses or state",
+         t_connect_password_never_leaks),
+        ("feeder: a clock 401 is surfaced and does not kill the thread",
+         t_feeder_auth_error_is_surfaced_not_fatal),
         ("api access: OFF by default, agent endpoints 403, echo redacted",
          t_api_access_default_off),
         ("api access: enable generates token; /api/access-token reveals it",

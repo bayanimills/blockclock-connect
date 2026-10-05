@@ -31,8 +31,8 @@ import time
 import urllib.error
 from http.client import HTTPException
 
-from clock import ClockClient, lights_path, pause_path, pick_path, \
-    preview_slots, update_rate_path
+from clock import ClockAuthError, ClockClient, clock_password, lights_path, \
+    pause_path, pick_path, preview_slots, update_rate_path
 import sources
 from sources import build_frames
 from store import MIN_WRITE_INTERVAL_S
@@ -52,6 +52,7 @@ MAX_PENDING_EVENTS = 6        # cap so a burst can't monopolise the screen
 TRANSIENT_ERRORS = (HTTPException, urllib.error.URLError, OSError)
 FAIL_ALERT_AFTER = 5          # consecutive bad cycles before an ERROR
 FAIL_BACKOFF_MAX_S = 30       # cap on the post-failure pause
+AUTH_RETRY_S = 60             # pause after a 401; a config change cuts it short
 
 
 class Feeder(threading.Thread):
@@ -72,6 +73,7 @@ class Feeder(threading.Thread):
         self._last_color = None
         self.original_tag = None
         self.push_fails = 0           # consecutive failed cycles
+        self.auth_error = None        # message while the clock says 401
 
     # ------------------------------------------------------------------ API #
 
@@ -131,7 +133,8 @@ class Feeder(threading.Thread):
     # ------------------------------------------------------- internals #
 
     def _new_client(self, ip, interval):
-        client = ClockClient(ip, write_interval_s=interval)
+        password = clock_password(self.store.config.get("clock"))
+        client = ClockClient(ip, password=password, write_interval_s=interval)
         client.stop_event = self.stop_event
         # survive restarts without an instant 429: honour the persisted
         # last-write timestamp if it is recent
@@ -396,6 +399,7 @@ class Feeder(threading.Thread):
                     if self.driving:
                         self._restore()
                     self.client = None
+                    self.auth_error = None
                     self.wake.clear()
                     self.wake.wait(IDLE_POLL_S)
                     continue
@@ -410,6 +414,8 @@ class Feeder(threading.Thread):
                         self._restore()   # hand the OLD clock back first
                     self.client = self._new_client(clock_cfg["ip"], interval)
                     self.rot_index = 0
+                elif self.client.password != clock_password(clock_cfg):
+                    self.client.set_password(clock_password(clock_cfg))
                 self.client.write_interval_s = interval
 
                 # -- build what we can show right now (the rotation view)
@@ -489,6 +495,15 @@ class Feeder(threading.Thread):
                         self._set_lights(frame["slotargs"].get("color"))
                     accepted = self.client.push(frame["path"])  # window spent
                     self._record_frame(frame, accepted)
+                except ClockAuthError as e:
+                    # not "offline" and not worth hammering: say so, then
+                    # wait (a new password from the UI wakes us early)
+                    if self.auth_error != str(e):
+                        log.warning("clock %s: %s", self.client.host, e)
+                    self.auth_error = str(e)
+                    self.wake.clear()
+                    self.wake.wait(AUTH_RETRY_S)
+                    continue
                 except TRANSIENT_ERRORS as e:
                     self.push_fails += 1
                     log.warning("cycle failed (%d in a row): %r",
@@ -503,6 +518,7 @@ class Feeder(threading.Thread):
                                              FAIL_BACKOFF_MAX_S))
                     continue
                 self.push_fails = 0
+                self.auth_error = None
         except Exception:
             log.exception("feeder crashed")
         finally:

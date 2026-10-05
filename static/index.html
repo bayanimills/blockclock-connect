@@ -51,6 +51,11 @@
                autocomplete="off" spellcheck="false">
         <button id="btn-connect" class="btn">Connect</button>
       </div>
+      <div class="row">
+        <label class="sr-only" for="clock-password">Clock system password</label>
+        <input id="clock-password" type="password" autocomplete="new-password"
+               placeholder="System password (only if you set one on the clock)">
+      </div>
       <p id="connect-error" class="error" hidden></p>
       <p class="hint">No clock handy? You can still build and preview your
         rotation below - connect any time to play it.</p>
@@ -65,6 +70,14 @@
           <span id="driving-note" class="hint"></span>
         </div>
         <button id="btn-disconnect" class="btn btn-ghost">Disconnect</button>
+      </div>
+      <p id="clock-error" class="error" hidden></p>
+      <div class="row">
+        <label class="sr-only" for="clock-password-update">Clock system password</label>
+        <input id="clock-password-update" type="password"
+               autocomplete="new-password"
+               placeholder="System password (leave blank to keep current)">
+        <button id="btn-password" class="btn">Update password</button>
       </div>
     </div>
   </section>
