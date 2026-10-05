@@ -66,6 +66,25 @@ python app.py --selfcheck
 CI runs the selfcheck on every push/PR, and a tag push (`v*`) builds and
 publishes the multi-arch image to `ghcr.io/bayanimills/blockclock-connect`.
 
+## Clock password (optional)
+
+The BLOCKCLOCK can protect its setup page and API with a **System Password**
+(clock web UI: `/prefs` -> *System Password*). The clock then requires HTTP
+Digest auth with an empty username. To keep BlockClock Connect working:
+
+1. Set the password on the clock.
+2. In the app, type the same password in the *System password* field and
+   connect (or, if already connected, use *Update password*). It is
+   write-only: never shown or returned by the app, and blank keeps the saved
+   one.
+
+Alternatively set `clock.password` in `config.json`, or the
+`BLOCKCLOCK_PASSWORD` environment variable (which overrides the config).
+Leave it unset for a clock with no password. Scanning cannot list
+password-protected clocks; enter the IP and password directly. If the clock
+answers 401, the app shows "clock rejected password / requires a password"
+and retries once a minute instead of treating the clock as offline.
+
 ## Agent / API control
 
 Enable "AI assistant / API access" in the app to mint a bearer token, then use

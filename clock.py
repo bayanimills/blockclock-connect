@@ -13,10 +13,14 @@ verified against real hardware and must not be "simplified":
     named pattern (off/white/flash/yellow_stars/yellow_1).
   * /api/status is unmetered and safe to poll; it is the discovery fingerprint
     ("is_micro", "version") and the verification oracle.
+  * an optional System Password makes the device demand HTTP Digest auth with
+    an EMPTY username. Every request to the clock goes through `open_clock`,
+    the single place that applies it.
 """
 
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +31,8 @@ log = logging.getLogger("blockclock")
 
 SLOTS = 7
 
+PASSWORD_ENV = "BLOCKCLOCK_PASSWORD"   # overrides clock.password in config
+
 # LED palette. Deliberately muted; this sits in a room, not a rave.
 LED_BTC_ORANGE = "F7931A00"   # Bitcoin orange - price frames
 LED_NET_BLUE = "1050C000"     # calm blue - network frames
@@ -35,6 +41,64 @@ LED_AMBER = "E07E0000"        # fees elevated / hot
 LED_GREEN = "18B31800"        # fees cheap / mild weather
 LED_ICE_BLUE = "3060E000"     # freezing weather
 LED_WARM_WHITE = "00000060"   # W channel only - neutral frames
+
+
+# --------------------------------------------------------------------------- #
+# Auth: the one path every clock request takes
+# --------------------------------------------------------------------------- #
+
+class ClockAuthError(Exception):
+    """The clock answered 401: it needs a password, or rejected ours. Never
+    "offline", never retried in a loop - the caller must surface it."""
+
+
+def clock_password(clock_cfg):
+    """The configured System Password: env var wins over config.json's
+    clock.password. Empty string means no auth."""
+    env = os.environ.get(PASSWORD_ENV)
+    if env:
+        return env
+    return str((clock_cfg or {}).get("password") or "")
+
+
+class _DigestOnce(urllib.request.HTTPDigestAuthHandler):
+    """Answer a challenge ONCE. urllib would re-send a wrong password up to
+    five more times; a second 401 means it is wrong, so stop there."""
+
+    def retry_http_digest_auth(self, req, auth):
+        if self.retried > 1:
+            return None
+        return super().retry_http_digest_auth(req, auth)
+
+
+def build_opener(base, password=""):
+    handlers = []
+    if password:
+        mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+        # digest with an EMPTY username, per the vendor spec
+        mgr.add_password(None, base, "", password)
+        handlers.append(_DigestOnce(mgr))
+    return urllib.request.build_opener(*handlers)
+
+
+def open_clock(base, path, password="", timeout=40, opener=None):
+    """GET base+path, answering a Digest challenge when a password is set.
+    A 401 becomes ClockAuthError (the message never contains the password);
+    every other outcome is left to the caller exactly as urllib raises it."""
+    opener = opener or build_opener(base, password)
+    req = urllib.request.Request(base + path,
+                                 headers={"User-Agent": "blockclock-connect/1"})
+    try:
+        return opener.open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            raise
+        e.close()
+        if password:
+            raise ClockAuthError("The clock rejected the password. Check it "
+                                 "matches the clock's System Password.") from None
+        raise ClockAuthError("The clock requires a password. Enter its "
+                             "System Password.") from None
 
 
 # --------------------------------------------------------------------------- #
@@ -121,24 +185,23 @@ class ClockClient:
         self.stop_event = None  # optional threading.Event; set -> abort waits
 
     def _build_opener(self):
-        handlers = []
-        if self.password:
-            mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-            # digest with an EMPTY username, per the vendor spec
-            mgr.add_password(None, self.base, "", self.password)
-            handlers.append(urllib.request.HTTPDigestAuthHandler(mgr))
-        return urllib.request.build_opener(*handlers)
+        return build_opener(self.base, self.password)
+
+    def set_password(self, password):
+        self.password = password or ""
+        self._opener = self._build_opener()
 
     def _get(self, path, timeout=40):
-        url = self.base + path
-        req = urllib.request.Request(url, headers={"User-Agent": "blockclock-connect/1"})
-        return self._opener.open(req, timeout=timeout)
+        return open_clock(self.base, path, self.password, timeout,
+                          opener=self._opener)
 
     def status(self, timeout=15):
         """/api/status is unmetered; the verification oracle. Dict or None."""
         try:
             with self._get("/api/status", timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8", "replace"))
+        except ClockAuthError:
+            raise
         except Exception as e:
             log.info("status(%s) failed: %r", self.host, e)
             return None
@@ -170,6 +233,8 @@ class ClockClient:
           * HTTP 429 (rate limited) -> NOT accepted; wait a full window, retry.
                                        Out of retries -> give up (False)
           * other HTTP error        -> device answered with an error -> False
+          * HTTP 401                -> ClockAuthError (needs/rejected password);
+                                       the caller surfaces it, no retry here
         """
         if respect_rate:
             self._rate_wait()
